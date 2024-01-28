@@ -25,11 +25,11 @@ This Burp Suite extension was created as a side project while working on the [Da
 
 ### Regular Repeater Tab - Encrypted Data
 
-![]()
+![](https://github.com/0xQRx/BurpPlugins/blob/master/Damn_Vulnerable_Bank_Decryption_Burp_Plugin/img/encrypted.png?raw=true)
 
 ### Decrypted Tab - Decrypted Data
 
-![]()
+![](https://github.com/0xQRx/BurpPlugins/blob/master/Damn_Vulnerable_Bank_Decryption_Burp_Plugin/img/decrypted.png?raw=true)
 
 ## Disclaimer
 
