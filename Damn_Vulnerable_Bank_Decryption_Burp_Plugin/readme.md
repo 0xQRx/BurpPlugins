@@ -11,11 +11,7 @@ This Burp Suite extension was created as a side project while working on the [Da
 
 ## Installation
 
-1. Clone this repository to your local machine.
-
-```
-git clone 
-```
+1. Download `dvba_decryption_burp_plugin.py` to to your local machine.
 
 2. Load the extension in Burp Suite to start using it.
 
