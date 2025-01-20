@@ -13,7 +13,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("Repeater Logger and Saver")
+        callbacks.setExtensionName("Repeater & Proxy Logger")
         self.stdout = PrintWriter(callbacks.getStdout(), True)
         
         # Register ourselves as a context menu factory
@@ -33,7 +33,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.sanitization_file = None
         self.sanitization_strings = {}
         
-        self.stdout.println("Repeater Logger and Saver extension loaded")
+        self.stdout.println("Repeater & Proxy Logger extension loaded")
 
     def getTabCaption(self):
         return "Repeater Logger"
@@ -77,14 +77,29 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                 json.dump(self.sanitization_strings, f, indent=4)
     
     def createMenuItems(self, invocation):
+        """
+        Provide context menu items both in:
+          - Repeater (CONTEXT_MESSAGE_EDITOR_REQUEST)
+          - Proxy History (CONTEXT_PROXY_HISTORY)
+        """
         menu = []
-        if invocation.getInvocationContext() == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST:
-            menu_item_save = JMenuItem("Save Request/Response", actionPerformed=lambda x: self.print_and_save_request_response(invocation))
+        context = invocation.getInvocationContext()
+
+        if (context == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST or
+            context == IContextMenuInvocation.CONTEXT_PROXY_HISTORY):
+
+            menu_item_save = JMenuItem("Save Request/Response",
+                                       actionPerformed=lambda x: self.print_and_save_request_response(invocation))
             menu.append(menu_item_save)
-            menu_item_load = JMenuItem("Load Request/Response from File", actionPerformed=lambda x: self.load_request_response(invocation))
+
+            menu_item_load = JMenuItem("Load Request/Response from File",
+                                       actionPerformed=lambda x: self.load_request_response(invocation))
             menu.append(menu_item_load)
-            menu_item_sanitize = JMenuItem("Manage Sanitization Strings", actionPerformed=lambda x: self.manage_sanitization_strings())
+
+            menu_item_sanitize = JMenuItem("Manage Sanitization Strings",
+                                           actionPerformed=lambda x: self.manage_sanitization_strings())
             menu.append(menu_item_sanitize)
+
         return menu
     
     def manage_sanitization_strings(self):
@@ -146,88 +161,110 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
 
     def sanitize_content(self, content):
         if isinstance(content, (bytes, bytearray)):
-            content = content.decode('utf-8')
+            content = content.decode('utf-8', errors='replace')
         for key, value in self.sanitization_strings.items():
             content = content.replace(key, value)
-        return content.encode('utf-8')
+        return content.encode('utf-8', errors='replace')
 
     def reverse_sanitize_content(self, content):
         if isinstance(content, (bytes, bytearray)):
-            content = content.decode('utf-8')
+            content = content.decode('utf-8', errors='replace')
         for key, value in self.sanitization_strings.items():
             content = content.replace(value, key)
-        return content.encode('utf-8')
+        return content.encode('utf-8', errors='replace')
     
     def print_and_save_request_response(self, invocation):
+        """
+        Handle multiple selected messages but write them all into ONE JSON file.
+        The array in the JSON file is in the same order as getSelectedMessages().
+        """
         if not hasattr(self, 'data_dir') or not self.data_dir:
             JOptionPane.showMessageDialog(None, "Please set the working directory first.")
             return
         
-        request_response = invocation.getSelectedMessages()[0]
-        request = request_response.getRequest()
-        response = request_response.getResponse()
+        selected_messages = invocation.getSelectedMessages()
+        if not selected_messages:
+            return
         
-        # Analyze request
-        analyzed_request = self._helpers.analyzeRequest(request)
-        request_headers = [str(header) for header in analyzed_request.getHeaders()]
-        request_body = request[analyzed_request.getBodyOffset():].tostring()
-        http_method = analyzed_request.getMethod()
-        
-        # Extract the first header to get the path
-        first_header = request_headers[0]
-        path = first_header.split(" ")[1].split("?")[0]
-        url_path = path.replace("/", "_").strip("_")
-        
-        # Analyze response if it exists
-        if response:
-            analyzed_response = self._helpers.analyzeResponse(response)
-            response_headers = [str(header) for header in analyzed_response.getHeaders()]
-            response_body = response[analyzed_response.getBodyOffset():].tostring()
-        else:
-            response_headers = []
-            response_body = "No response"
-        
-        # Sanitize request/response headers and body
-        request_headers = [self.sanitize_content(header) for header in request_headers]
-        request_body = self.sanitize_content(request_body)
-        response_headers = [self.sanitize_content(header) for header in response_headers]
-        response_body = self.sanitize_content(response_body)
-        
-        # Print request/response to the console
-        self.stdout.println("Request:")
-        for header in request_headers:
-            self.stdout.println(header)
-        self.stdout.println(request_body)
-        
-        self.stdout.println("\nResponse:")
-        for header in response_headers:
-            self.stdout.println(header)
-        self.stdout.println(response_body)
-        
-        # Save request/response to a file
-        data = {
-            "request": {
-                "headers": [header.decode('utf-8') if isinstance(header, bytes) else header for header in request_headers],
-                "body": request_body.decode('utf-8') if isinstance(request_body, bytes) else request_body
-            },
-            "response": {
-                "headers": [header.decode('utf-8') if isinstance(header, bytes) else header for header in response_headers],
-                "body": response_body.decode('utf-8') if isinstance(response_body, bytes) else response_body
+        # We'll accumulate all the requests/responses in an array
+        all_entries = []
+
+        # Process each selected message
+        for request_response in selected_messages:
+            request = request_response.getRequest()
+            response = request_response.getResponse()
+            
+            # Analyze request
+            analyzed_request = self._helpers.analyzeRequest(request)
+            request_headers = [str(header) for header in analyzed_request.getHeaders()]
+            request_body = request[analyzed_request.getBodyOffset():].tostring()
+            http_method = analyzed_request.getMethod()
+            
+            # Extract the first header to get the path
+            first_header = request_headers[0] if request_headers else ""
+            try:
+                path = first_header.split(" ")[1].split("?")[0]
+            except:
+                path = ""
+            url_path = path.replace("/", "_").strip("_")
+            
+            # Analyze response if it exists
+            if response:
+                analyzed_response = self._helpers.analyzeResponse(response)
+                response_headers = [str(header) for header in analyzed_response.getHeaders()]
+                response_body = response[analyzed_response.getBodyOffset():].tostring()
+            else:
+                response_headers = []
+                response_body = "No response"
+            
+            # Sanitize request/response headers and body
+            request_headers_sanit = [self.sanitize_content(h) for h in request_headers]
+            request_body_sanit     = self.sanitize_content(request_body)
+            response_headers_sanit = [self.sanitize_content(h) for h in response_headers]
+            response_body_sanit    = self.sanitize_content(response_body)
+            
+            # Print to the Burp console (optional)
+            self.stdout.println("Request:")
+            for h in request_headers_sanit:
+                self.stdout.println(h)
+            self.stdout.println(request_body_sanit)
+            
+            self.stdout.println("\nResponse:")
+            for h in response_headers_sanit:
+                self.stdout.println(h)
+            self.stdout.println(response_body_sanit)
+            self.stdout.println("="*60)
+            
+            # Prepare data structure for this entry
+            entry_data = {
+                "http_method": http_method,
+                "url_path": url_path,
+                "request": {
+                    "headers": [h.decode('utf-8', errors='replace') for h in request_headers_sanit],
+                    "body": request_body_sanit.decode('utf-8', errors='replace')
+                },
+                "response": {
+                    "headers": [h.decode('utf-8', errors='replace') for h in response_headers_sanit],
+                    "body": response_body_sanit.decode('utf-8', errors='replace')
+                }
             }
-        }
-        
-        # Generate hash for the request
-        request_hash = hashlib.md5(json.dumps(data["request"], sort_keys=True).encode('utf-8')).hexdigest()
-        
-        # Generate filename
-        current_time = datetime.datetime.now().strftime("%H:%M-%m-%d-%Y")
-        file_name = "{}_{}_{}_{}.json".format(http_method.lower(), url_path, current_time, request_hash)
+            
+            all_entries.append(entry_data)
+
+        # Now write all_entries into a single JSON file
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        file_name = "proxy_export_{}.json".format(current_time)
         file_path = os.path.join(self.data_dir, file_name)
         
+        top_level = {
+            "exported_at": current_time,
+            "entries": all_entries
+        }
+
         try:
             with open(file_path, 'w') as f:
-                json.dump(data, f, indent=4)
-            self.stdout.println("Request/Response saved to file: {}".format(file_path))
+                json.dump(top_level, f, indent=4)
+            self.stdout.println("All selected requests/responses saved to file:\n  {}".format(file_path))
         except Exception as e:
             self.stdout.println("Error saving request/response to file: {}".format(str(e)))
 
@@ -236,7 +273,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
             JOptionPane.showMessageDialog(None, "Please set the working directory first.")
             return
         
-        # Open a file chooser dialog to select the file to load
+        # Open a file chooser dialog to select the file(s) to load
         file_chooser = JFileChooser(self.data_dir)
         file_chooser.setMultiSelectionEnabled(True)
         result = file_chooser.showOpenDialog(None)
@@ -244,39 +281,50 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         if result == JFileChooser.APPROVE_OPTION:
             files = file_chooser.getSelectedFiles()
             
+            # We'll send each file's requests to Repeater
             for file in files:
                 file_path = file.getAbsolutePath()
                 try:
                     with open(file_path, 'r') as f:
-                        data = json.load(f)
+                        top_level = json.load(f)
                     
-                    # Extract request and response data
-                    request_headers = data['request']['headers']
-                    request_body = data['request']['body'].encode('utf-8')
-                    response_headers = data['response']['headers']
-                    response_body = data['response']['body'].encode('utf-8')
+                    # "entries" is our array of request/response items
+                    entries = top_level.get("entries", [])
+                    if not entries:
+                        self.stdout.println("No 'entries' found in {}".format(file_path))
+                        continue
                     
-                    # Reverse sanitize request and response data
-                    request_headers = [self.reverse_sanitize_content(header) for header in request_headers]
-                    request_body = self.reverse_sanitize_content(request_body)
-                    response_headers = [self.reverse_sanitize_content(header) for header in response_headers]
-                    response_body = self.reverse_sanitize_content(response_body)
+                    # Reuse the host/port/protocol from the first selected message (if any)
+                    original_service = invocation.getSelectedMessages()[0].getHttpService()
                     
-                    # Build new request
-                    new_request = self._helpers.buildHttpMessage(request_headers, request_body)
+                    for entry_data in entries:
+                        request_headers = entry_data["request"]["headers"]
+                        request_body    = entry_data["request"]["body"].encode('utf-8', errors='replace')
+
+                        # Reverse sanitize
+                        request_headers = [self.reverse_sanitize_content(h) for h in request_headers]
+                        request_body    = self.reverse_sanitize_content(request_body)
+                        
+                        # Build the new request
+                        new_request = self._helpers.buildHttpMessage(request_headers, request_body)
+                        
+                        # Build HttpService based on the original
+                        http_service = self._helpers.buildHttpService(
+                            original_service.getHost(),
+                            original_service.getPort(),
+                            (original_service.getProtocol() == "https")
+                        )
+                        
+                        # Send to Repeater
+                        self._callbacks.sendToRepeater(
+                            http_service.getHost(),
+                            http_service.getPort(),
+                            http_service.getProtocol() == "https",
+                            new_request,
+                            "Loaded Request"
+                        )
                     
-                    # Set the new request in the Repeater tab
-                    http_service = self._helpers.buildHttpService(invocation.getSelectedMessages()[0].getHttpService().getHost(), 
-                                                                  invocation.getSelectedMessages()[0].getHttpService().getPort(), 
-                                                                  invocation.getSelectedMessages()[0].getHttpService().getProtocol() == "https")
-                    
-                    self._callbacks.sendToRepeater(http_service.getHost(),
-                                                   http_service.getPort(),
-                                                   http_service.getProtocol() == "https",
-                                                   new_request,
-                                                   "Loaded Request")
-                    
-                    self.stdout.println("Request/Response loaded from file: {}".format(file_path))
+                    self.stdout.println("Requests loaded from file: {}".format(file_path))
 
                 except Exception as e:
                     self.stdout.println("Error loading request/response from file: {}".format(str(e)))
