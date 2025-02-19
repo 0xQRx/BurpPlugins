@@ -7,21 +7,21 @@ class BurpExtender(IBurpExtender, ITab):
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("URL Active Scanner")
+        callbacks.setExtensionName("ActiveScan Kicker")
         SwingUtilities.invokeLater(self.createUI)
         return
 
     def createUI(self):
         self._panel = JPanel(BorderLayout())
         self._urlTextArea = JTextArea(20, 50)
-        self._scanButton = JButton("Scan Selected URLs", actionPerformed=self.startScan)
+        self._scanButton = JButton("Scan URLs", actionPerformed=self.startScan)
         self._panel.add(JScrollPane(self._urlTextArea), BorderLayout.CENTER)
         self._panel.add(self._scanButton, BorderLayout.SOUTH)
         self._callbacks.addSuiteTab(self)
         return
 
     def getTabCaption(self):
-        return "URL Scanner"
+        return "ActiveScan Kicker"
 
     def getUiComponent(self):
         return self._panel
